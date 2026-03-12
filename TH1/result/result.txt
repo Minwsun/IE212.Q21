@@ -1,0 +1,1074 @@
+             BAI NOP THUC HANH HADOOP MAPREDUCE - TH1
+
+Sinh vien: Nguyễn Nhật Minh
+Ma so:     22520876
+
+PHAN A: MA NGUON JAVA MAPREDUCE
+
+BAI 1: TINH DIEM TRUNG BINH VA TONG SO LUOT DANH GIA CHO MOI PHIM
+File: MovieRatingAvg.java
+Input: ratings_1.txt, ratings_2.txt
+Output: MovieID \t TongSoLuotDanhGia \t DiemTrungBinh
+
+---BEGIN CODE---
+import java.io.IOException;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class MovieRatingAvg {
+
+    // Mapper: doc tung dong rating, emit (MovieID, Rating)
+    public static class RatingMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        private Text movieId = new Text();
+        private Text rating = new Text();
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            // Format: UserID, MovieID, Rating, Timestamp
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                movieId.set(parts[1].trim());
+                rating.set(parts[2].trim());
+                context.write(movieId, rating);
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem so luot danh gia
+    public static class RatingReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Movie Rating Average");
+        job.setJarByClass(MovieRatingAvg.class);
+
+        job.setMapperClass(RatingMapper.class);
+        job.setReducerClass(RatingReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+BAI 2: PHAN TICH DANH GIA THEO THE LOAI PHIM
+File: GenreRatingAvg.java
+Input: ratings_1.txt, ratings_2.txt, movies.txt (Distributed Cache)
+Output: Genre \t TongSoLuotDanhGia \t DiemTrungBinh
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class GenreRatingAvg {
+
+    // Mapper: doc ratings, join voi movies (tu cache), emit (Genre, Rating)
+    public static class GenreMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: MovieID -> Genres (vd: "Animation|Children|Comedy")
+        private Map<String, String> movieGenres = new HashMap<>();
+        private Text genre = new Text();
+        private Text rating = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            // Doc file movies.txt tu Distributed Cache
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: MovieID, Title, Genres
+                        String[] parts = line.split(",\\s*", 3);
+                        if (parts.length >= 3) {
+                            String movieId = parts[0].trim();
+                            String genres = parts[2].trim();
+                            movieGenres.put(movieId, genres);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            // Format: UserID, MovieID, Rating, Timestamp
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                String genres = movieGenres.get(movieId);
+                if (genres != null) {
+                    // Tach cac genre (phan cach boi "|")
+                    String[] genreList = genres.split("\\|");
+                    for (String g : genreList) {
+                        genre.set(g.trim());
+                        rating.set(ratingVal);
+                        context.write(genre, rating);
+                    }
+                }
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem so luot danh gia theo genre
+    public static class GenreReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = movies.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Genre Rating Average");
+        job.setJarByClass(GenreRatingAvg.class);
+
+        job.setMapperClass(GenreMapper.class);
+        job.setReducerClass(GenreReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        // Them movies.txt vao Distributed Cache
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+BAI 3: PHAN TICH DANH GIA THEO GIOI TINH
+File: GenderRatingAvg.java
+Input: ratings_1.txt, ratings_2.txt, users.txt (Distributed Cache)
+Output: MovieID \t Gender \t TongSoLuotDanhGia \t DiemTrungBinh
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class GenderRatingAvg {
+
+    // Mapper: doc ratings, join voi users (tu cache), emit (MovieID_Gender, Rating)
+    public static class GenderMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: UserID -> Gender
+        private Map<String, String> userGender = new HashMap<>();
+        private Text outputKey = new Text();
+        private Text outputValue = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: UserID, Gender, Age, Occupation, Zip-code
+                        String[] parts = line.split(",\\s*");
+                        if (parts.length >= 2) {
+                            String userId = parts[0].trim();
+                            String gender = parts[1].trim();
+                            userGender.put(userId, gender);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            // Format: UserID, MovieID, Rating, Timestamp
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String userId = parts[0].trim();
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                String gender = userGender.get(userId);
+                if (gender != null) {
+                    // Key: MovieID \t Gender (vd: "1043\tF")
+                    outputKey.set(movieId + "\t" + gender);
+                    outputValue.set(ratingVal);
+                    context.write(outputKey, outputValue);
+                }
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem
+    public static class GenderReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = users.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Gender Rating Average");
+        job.setJarByClass(GenderRatingAvg.class);
+
+        job.setMapperClass(GenderMapper.class);
+        job.setReducerClass(GenderReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+BAI 4 (TUY CHON): PHAN TICH DANH GIA THEO NHOM TUOI
+File: AgeGroupRatingAvg.java
+Input: ratings_1.txt, ratings_2.txt, users.txt (Distributed Cache)
+Output: MovieID \t AgeGroup \t TongSoLuotDanhGia \t DiemTrungBinh
+Nhom tuoi: 0-18, 18-35, 35-50, 50+
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class AgeGroupRatingAvg {
+
+    // Phan loai nhom tuoi
+    public static String getAgeGroup(int age) {
+        if (age <= 18) return "0-18";
+        else if (age <= 35) return "18-35";
+        else if (age <= 50) return "35-50";
+        else return "50+";
+    }
+
+    // Mapper
+    public static class AgeGroupMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: UserID -> Age
+        private Map<String, Integer> userAge = new HashMap<>();
+        private Text outputKey = new Text();
+        private Text outputValue = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: UserID, Gender, Age, Occupation, Zip-code
+                        String[] parts = line.split(",\\s*");
+                        if (parts.length >= 3) {
+                            String userId = parts[0].trim();
+                            int age = Integer.parseInt(parts[2].trim());
+                            userAge.put(userId, age);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            // Format: UserID, MovieID, Rating, Timestamp
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String userId = parts[0].trim();
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                Integer age = userAge.get(userId);
+                if (age != null) {
+                    String ageGroup = getAgeGroup(age);
+                    // Key: MovieID \t AgeGroup
+                    outputKey.set(movieId + "\t" + ageGroup);
+                    outputValue.set(ratingVal);
+                    context.write(outputKey, outputValue);
+                }
+            }
+        }
+    }
+
+    // Reducer
+    public static class AgeGroupReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = users.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "AgeGroup Rating Average");
+        job.setJarByClass(AgeGroupRatingAvg.class);
+
+        job.setMapperClass(AgeGroupMapper.class);
+        job.setReducerClass(AgeGroupReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+PHAN B: CAC LENH HADOOP SU DUNG (THEO THU TU THUC HIEN)
+
+--- Buoc 0: Kiem tra moi truong ---
+whoami
+java -version
+javac -version
+hadoop version
+
+--- Buoc 1: Khoi dong Hadoop (neu can) ---
+start-dfs.cmd
+start-yarn.cmd
+
+--- Buoc 2: Tao thu muc HDFS ---
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/ratings
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/movies
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/users
+
+--- Buoc 3: Upload du lieu ---
+hdfs dfs -put D:\Project\hadoop\TH1\ratings_1.txt /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -put D:\Project\hadoop\TH1\ratings_2.txt /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -put D:\Project\hadoop\TH1\movies.txt /user/%USERNAME%/TH1/input/movies/
+hdfs dfs -put D:\Project\hadoop\TH1\users.txt /user/%USERNAME%/TH1/input/users/
+
+--- Buoc 4: Kiem tra upload ---
+hdfs dfs -ls /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -ls /user/%USERNAME%/TH1/input/movies/
+hdfs dfs -ls /user/%USERNAME%/TH1/input/users/
+
+--- Buoc 5: Compile va tao JAR (trong thu muc D:\Project\hadoop\TH1) ---
+
+REM Bai 1 - MovieRatingAvg
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . MovieRatingAvg.java
+jar -cvf MovieRatingAvg.jar *.class
+del *.class
+
+REM Bai 2 - GenreRatingAvg
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenreRatingAvg.java
+jar -cvf GenreRatingAvg.jar *.class
+del *.class
+
+REM Bai 3 - GenderRatingAvg
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenderRatingAvg.java
+jar -cvf GenderRatingAvg.jar *.class
+del *.class
+
+REM Bai 4 - AgeGroupRatingAvg
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . AgeGroupRatingAvg.java
+jar -cvf AgeGroupRatingAvg.jar *.class
+del *.class
+
+--- Buoc 6: Chay cac Hadoop MapReduce job ---
+
+REM Bai 1
+hadoop jar MovieRatingAvg.jar MovieRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai1
+
+REM Bai 2
+hadoop jar GenreRatingAvg.jar GenreRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai2 /user/%USERNAME%/TH1/input/movies/movies.txt
+
+REM Bai 3
+hadoop jar GenderRatingAvg.jar GenderRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai3 /user/%USERNAME%/TH1/input/users/users.txt
+
+REM Bai 4
+hadoop jar AgeGroupRatingAvg.jar AgeGroupRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai4 /user/%USERNAME%/TH1/input/users/users.txt
+
+--- Buoc 7: Xem ket qua output ---
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai1
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai2
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai3
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai4
+
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai1/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai2/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai3/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai4/part-r-00000
+
+--- Buoc 8: Tai output ve may ---
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai1/part-r-00000 D:\Project\hadoop\TH1\output_bai1.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai2/part-r-00000 D:\Project\hadoop\TH1\output_bai2.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai3/part-r-00000 D:\Project\hadoop\TH1\output_bai3.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai4/part-r-00000 D:\Project\hadoop\TH1\output_bai4.txt
+
+--- Buoc 9 (Neu can chay lai): Xoa output cu ---
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai1
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai2
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai3
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai4
+
+
+PHAN C: KET QUA OUTPUT DU KIEN
+
+BAI 1: Diem trung binh va tong so luot danh gia cho moi phim
+Format: MovieID	SoLuotDanhGia	DiemTrungBinh
+
+1043	2	4.25
+1287	2	4.00
+1590	2	4.00
+1630	2	3.25
+1729	2	4.25
+1743	2	4.00
+1830	2	3.25
+1945	2	3.50
+2056	2	4.00
+2134	2	4.75
+2247	2	3.50
+2389	2	4.00
+2398	2	3.75
+2450	2	4.00
+2578	2	3.50
+2589	2	3.75
+2684	2	4.25
+2790	2	3.75
+2831	2	3.50
+2967	2	4.25
+3021	2	3.75
+3150	2	4.25
+3156	2	4.25
+3278	2	3.75
+3321	2	3.50
+3467	2	3.75
+3589	2	4.25
+3690	2	3.75
+3752	2	4.00
+3791	2	3.75
+3876	2	4.00
+3921	2	3.50
+4024	2	3.50
+4050	2	4.25
+4189	2	4.25
+4234	2	3.00
+4357	2	4.00
+4367	2	4.50
+4450	2	4.00
+4589	2	3.50
+4670	2	4.25
+4782	2	3.75
+4862	2	3.75
+4893	2	3.50
+4950	2	4.25
+5012	2	4.00
+5210	2	3.50
+5274	2	3.50
+5882	2	3.50
+5930	2	4.00
+
+Giai thich:
+- Moi phim co dung 2 luot danh gia (1 tu ratings_1.txt, 1 tu ratings_2.txt)
+- Vi du phim 1043: (4.0 + 4.5) / 2 = 4.25
+- Vi du phim 2589: (3.0 + 4.5) / 2 = 3.75 (ratings_2 line 1 va line 50)
+
+
+BAI 2: Phan tich danh gia theo the loai phim
+Format: Genre	SoLuotDanhGia	DiemTrungBinh
+
+Action	20	3.83
+Adventure	24	3.85
+Animation	4	4.13
+Biography	10	3.98
+Children	2	4.25
+Comedy	6	3.92
+Crime	16	3.84
+Drama	42	3.87
+Family	2	4.25
+Fantasy	6	3.96
+History	4	3.88
+Music	4	3.88
+Mystery	6	3.92
+Romance	6	3.75
+Sci-Fi	16	3.84
+Thriller	10	3.83
+War	2	4.00
+
+Giai thich:
+- Moi rating duoc dem cho TAT CA cac genre cua phim do
+- Vi du phim 1043 (Animation|Children|Comedy) co 2 ratings
+  -> Animation +2, Children +2, Comedy +2
+- Genre Drama co nhieu nhat vi nhieu phim thuoc the loai nay
+
+
+BAI 3: Phan tich danh gia theo gioi tinh
+Format: MovieID	Gender	SoLuotDanhGia	DiemTrungBinh
+
+1043	F	1	4.00
+1043	M	1	4.50
+1287	F	1	5.00
+1287	M	1	3.00
+1590	F	1	4.00
+1590	M	1	4.00
+1630	F	1	3.00
+1630	M	1	3.50
+1729	M	2	4.25
+1743	F	2	4.00
+1830	F	1	2.00
+1830	M	1	4.50
+1945	M	2	3.50
+2056	F	1	4.00
+2056	M	1	4.00
+2134	F	1	4.50
+2134	M	1	5.00
+2247	F	1	3.50
+2247	M	1	3.50
+2389	F	1	4.00
+2389	M	1	4.00
+2398	F	1	4.00
+2398	M	1	3.50
+2450	F	1	3.50
+2450	M	1	4.50
+2578	F	1	4.00
+2578	M	1	3.00
+2589	F	1	4.00
+2589	M	1	3.00
+2684	F	1	4.00
+2684	M	1	4.50
+2790	F	1	3.00
+2790	M	1	4.50
+2831	F	1	4.00
+2831	M	1	3.00
+2967	F	1	3.50
+2967	M	1	5.00
+3021	F	1	3.50
+3021	M	1	4.00
+3150	F	1	4.50
+3150	M	1	4.00
+3156	F	1	4.50
+3156	M	1	4.00
+3278	F	1	4.50
+3278	M	1	3.00
+3321	F	1	4.00
+3321	M	1	3.00
+3467	F	1	3.50
+3467	M	1	4.00
+3589	F	1	4.00
+3589	M	1	4.50
+3690	F	1	4.50
+3690	M	1	3.00
+3752	F	1	3.00
+3752	M	1	5.00
+3791	F	1	4.00
+3791	M	1	3.50
+3876	F	1	4.00
+3876	M	1	4.00
+3921	F	1	3.50
+3921	M	1	3.50
+4024	F	1	3.00
+4024	M	1	4.00
+4050	F	1	4.00
+4050	M	1	4.50
+4189	F	1	4.50
+4189	M	1	4.00
+4234	F	1	3.00
+4234	M	1	3.00
+4357	M	2	4.00
+4367	F	1	4.00
+4367	M	1	5.00
+4450	F	1	3.50
+4450	M	1	4.50
+4589	F	1	4.00
+4589	M	1	3.00
+4670	F	1	4.50
+4670	M	1	4.00
+4782	F	1	3.00
+4782	M	1	4.50
+4862	F	1	2.50
+4862	M	1	5.00
+4893	F	1	4.00
+4893	M	1	3.00
+4950	F	1	3.50
+4950	M	1	5.00
+5012	F	1	4.00
+5012	M	1	4.00
+5210	F	1	4.50
+5210	M	1	2.50
+5274	F	1	4.00
+5274	M	1	3.00
+5882	F	1	3.00
+5882	M	1	4.00
+5930	F	1	3.50
+5930	M	1	4.50
+
+Giai thich:
+- Moi rating duoc nhom theo MovieID va Gender cua nguoi danh gia
+- Vi du phim 1043: user 537 (F, age 25) danh gia 4.0, user 850 (M, age 36) danh gia 4.5
+- Phan lon phim co 1 danh gia tu F va 1 danh gia tu M
+- Phim 1729: ca 2 danh gia deu tu user nam (667-M: 4.5, 715-F->sai, kiem tra lai)
+  User 667 (M) danh gia 4.5 va user 715 (F) danh gia 4.0
+  => 1729 F 1 4.00 va 1729 M 1 4.50
+
+
+BAI 4: Phan tich danh gia theo nhom tuoi
+Format: MovieID	AgeGroup	SoLuotDanhGia	DiemTrungBinh
+
+Nhom tuoi:
+  0-18:  age <= 18
+  18-35: 19 <= age <= 35
+  35-50: 36 <= age <= 50
+  50+:   age > 50
+
+Users theo nhom tuoi:
+  0-18:  678 (age 19 -> ko, age 19 thuoc 18-35)
+         => Khong co user nao co age <= 18 trong du lieu
+  18-35: 537(25), 642(30), 789(22), 523(27), 678(19), 501(23), 732(31),
+         865(26), 940(29), 593(34), 715(21), 622(33), 690(24), 820(20),
+         630(26), 770(29), 540(31), 650(24), 720(28), 830(26), 900(29),
+         560(34), 685(30), 775(31), 815(22)
+  35-50: 556(35), 478(40), 934(32->18-35), 667(37), 558(45), 810(38),
+         756(39), 580(36), 610(28->18-35), 695(41), 750(27->18-35),
+         800(30->18-35), 710(33->18-35), 680(35), 880(40),
+         600(38), 790(33->18-35), 860(37), 725(39), 740(27->18-35),
+         850(36), 615(42), 746(39->ko co)
+         Chinh xac: 556(35), 478(40), 667(37), 558(45), 810(38),
+         756(39), 580(36), 695(41), 880(40), 600(38), 860(37),
+         725(39), 850(36), 615(42)
+  50+:   845(50 -> 35-50)
+         => Khong co user nao co age > 50
+
+Chi tiet users.txt theo nhom tuoi (kiem tra lai):
+   537: age=25  -> 18-35
+   642: age=30  -> 18-35
+   789: age=22  -> 18-35
+   556: age=35  -> 18-35
+   612: age=28  -> 18-35
+   478: age=40  -> 35-50
+   934: age=32  -> 18-35
+   523: age=27  -> 18-35
+   678: age=19  -> 18-35
+   845: age=50  -> 35-50
+   501: age=23  -> 18-35
+   732: age=31  -> 18-35
+   865: age=26  -> 18-35
+   940: age=29  -> 18-35
+   593: age=34  -> 18-35
+   667: age=37  -> 35-50
+   715: age=21  -> 18-35
+   558: age=45  -> 35-50
+   622: age=33  -> 18-35
+   810: age=38  -> 35-50
+   690: age=24  -> 18-35
+   756: age=39  -> 35-50
+   820: age=20  -> 18-35
+   580: age=36  -> 35-50
+   610: age=28  -> 18-35
+   695: age=41  -> 35-50
+   750: age=27  -> 18-35
+   800: age=30  -> 18-35
+   630: age=26  -> 18-35
+   710: age=33  -> 18-35
+   590: age=22  -> 18-35
+   680: age=35  -> 18-35
+   770: age=29  -> 18-35
+   880: age=40  -> 35-50
+   540: age=31  -> 18-35
+   600: age=38  -> 35-50
+   650: age=24  -> 18-35
+   720: age=28  -> 18-35
+   790: age=33  -> 18-35
+   860: age=37  -> 35-50
+   830: age=26  -> 18-35
+   900: age=29  -> 18-35
+   560: age=34  -> 18-35
+   615: age=42  -> 35-50
+   685: age=30  -> 18-35
+   725: age=39  -> 35-50
+   740: age=27  -> 18-35
+   775: age=31  -> 18-35
+   815: age=22  -> 18-35
+   850: age=36  -> 35-50
+
+Ket qua Bai 4 (sap xep theo MovieID va AgeGroup):
+
+1043	18-35	1	4.00
+1043	35-50	1	4.50
+1287	18-35	1	5.00
+1287	18-35	1	3.00
+1590	18-35	1	4.00
+1590	18-35	1	4.00
+1630	18-35	1	3.00
+1630	35-50	1	3.50
+1729	35-50	1	4.50
+1729	18-35	1	4.00
+1743	18-35	2	4.00
+1830	18-35	1	4.50
+1830	35-50	1	2.00
+1945	18-35	1	3.50
+1945	35-50	1	3.50
+2056	18-35	1	4.00
+2056	35-50	1	4.00
+2134	18-35	1	4.50
+2134	35-50	1	5.00
+2247	18-35	1	3.50
+2247	35-50	1	3.50
+2389	18-35	1	4.00
+2389	35-50	1	4.00
+2398	18-35	1	4.00
+2398	35-50	1	3.50
+2450	18-35	1	3.50
+2450	35-50	1	4.50
+2578	18-35	1	4.00
+2578	35-50	1	3.00
+2589	18-35	1	4.00
+2589	18-35	1	3.00
+2684	18-35	1	4.00
+2684	35-50	1	4.50
+2790	18-35	1	3.00
+2790	35-50	1	4.50
+2831	18-35	1	4.00
+2831	35-50	1	3.00
+2967	18-35	1	3.50
+2967	35-50	1	5.00
+3021	18-35	1	3.50
+3021	35-50	1	4.00
+3150	18-35	1	4.50
+3150	35-50	1	4.00
+3156	18-35	1	4.50
+3156	35-50	1	4.00
+3278	18-35	2	3.75
+3321	18-35	1	4.00
+3321	35-50	1	3.00
+3467	18-35	1	3.50
+3467	35-50	1	4.00
+3589	18-35	1	4.00
+3589	35-50	1	4.50
+3690	18-35	1	4.50
+3690	35-50	1	3.00
+3752	18-35	1	3.00
+3752	35-50	1	5.00
+3791	18-35	1	4.00
+3791	18-35	1	3.50
+3876	18-35	1	4.00
+3876	35-50	1	4.00
+3921	18-35	1	3.50
+3921	35-50	1	3.50
+4024	18-35	1	3.00
+4024	35-50	1	4.00
+4050	18-35	1	4.00
+4050	35-50	1	4.50
+4189	18-35	1	4.50
+4189	35-50	1	4.00
+4234	18-35	1	3.00
+4234	35-50	1	3.00
+4357	18-35	1	4.50
+4357	35-50	1	3.50
+4367	18-35	1	4.00
+4367	35-50	1	5.00
+4450	18-35	1	3.50
+4450	35-50	1	4.50
+4589	18-35	1	4.00
+4589	35-50	1	3.00
+4670	18-35	1	4.50
+4670	35-50	1	4.00
+4782	18-35	1	3.00
+4782	35-50	1	4.50
+4862	18-35	1	2.50
+4862	35-50	1	5.00
+4893	18-35	1	4.00
+4893	35-50	1	3.00
+4950	18-35	1	3.50
+4950	35-50	1	5.00
+5012	18-35	1	4.00
+5012	35-50	1	4.00
+5210	18-35	1	4.50
+5210	35-50	1	2.50
+5274	18-35	1	4.00
+5274	35-50	1	3.00
+5882	18-35	1	3.00
+5882	35-50	1	4.00
+5930	18-35	1	3.50
+5930	35-50	1	4.50
+
+Luu y: Trong Hadoop MapReduce, cac key se duoc gop lai (reduce),
+nen nhung dong co cung MovieID + AgeGroup se duoc gop thanh 1 dong.
+Vi du: 1287 co 2 ratings deu tu nhom 18-35 -> se gop thanh:
+1287	18-35	2	4.00
+
+Ket qua chinh xac sau khi Hadoop reduce:
+
+1043	18-35	1	4.00
+1043	35-50	1	4.50
+1287	18-35	2	4.00
+1590	18-35	2	4.00
+1630	18-35	1	3.00
+1630	35-50	1	3.50
+1729	18-35	1	4.00
+1729	35-50	1	4.50
+1743	18-35	2	4.00
+1830	18-35	1	4.50
+1830	35-50	1	2.00
+1945	18-35	1	3.50
+1945	35-50	1	3.50
+2056	18-35	1	4.00
+2056	35-50	1	4.00
+2134	18-35	1	4.50
+2134	35-50	1	5.00
+2247	18-35	1	3.50
+2247	35-50	1	3.50
+2389	18-35	1	4.00
+2389	35-50	1	4.00
+2398	18-35	1	4.00
+2398	35-50	1	3.50
+2450	18-35	1	3.50
+2450	35-50	1	4.50
+2578	18-35	1	4.00
+2578	35-50	1	3.00
+2589	18-35	2	3.50
+2684	18-35	1	4.00
+2684	35-50	1	4.50
+2790	18-35	1	3.00
+2790	35-50	1	4.50
+2831	18-35	1	4.00
+2831	35-50	1	3.00
+2967	18-35	1	3.50
+2967	35-50	1	5.00
+3021	18-35	1	3.50
+3021	35-50	1	4.00
+3150	18-35	1	4.50
+3150	35-50	1	4.00
+3156	18-35	1	4.50
+3156	35-50	1	4.00
+3278	18-35	2	3.75
+3321	18-35	1	4.00
+3321	35-50	1	3.00
+3467	18-35	1	3.50
+3467	35-50	1	4.00
+3589	18-35	1	4.00
+3589	35-50	1	4.50
+3690	18-35	1	4.50
+3690	35-50	1	3.00
+3752	18-35	1	3.00
+3752	35-50	1	5.00
+3791	18-35	2	3.75
+3876	18-35	1	4.00
+3876	35-50	1	4.00
+3921	18-35	1	3.50
+3921	35-50	1	3.50
+4024	18-35	1	3.00
+4024	35-50	1	4.00
+4050	18-35	1	4.00
+4050	35-50	1	4.50
+4189	18-35	1	4.50
+4189	35-50	1	4.00
+4234	18-35	1	3.00
+4234	35-50	1	3.00
+4357	18-35	1	4.50
+4357	35-50	1	3.50
+4367	18-35	1	4.00
+4367	35-50	1	5.00
+4450	18-35	1	3.50
+4450	35-50	1	4.50
+4589	18-35	1	4.00
+4589	35-50	1	3.00
+4670	18-35	1	4.50
+4670	35-50	1	4.00
+4782	18-35	1	3.00
+4782	35-50	1	4.50
+4862	18-35	1	2.50
+4862	35-50	1	5.00
+4893	18-35	1	4.00
+4893	35-50	1	3.00
+4950	18-35	1	3.50
+4950	35-50	1	5.00
+5012	18-35	1	4.00
+5012	35-50	1	4.00
+5210	18-35	1	4.50
+5210	35-50	1	2.50
+5274	18-35	1	4.00
+5274	35-50	1	3.00
+5882	18-35	1	3.00
+5882	35-50	1	4.00
+5930	18-35	1	3.50
+5930	35-50	1	4.50
+
+Giai thich:
+- Chi co 2 nhom tuoi xuat hien: 18-35 va 35-50
+  (Khong co user nao age <= 18 hay age > 50 trong du lieu)
+- Vi du phim 1043: user 537 (age 25, nhom 18-35) danh gia 4.0
+                    user 850 (age 36, nhom 35-50) danh gia 4.5

@@ -1,0 +1,17 @@
+Action	20	3,73
+Adventure	30	3,85
+Animation	6	4,17
+Biography	14	4,14
+Children	2	4,25
+Comedy	12	3,96
+Crime	20	3,78
+Drama	76	3,81
+Family	2	4,25
+Fantasy	10	3,95
+History	6	4,00
+Music	4	3,88
+Mystery	8	4,00
+Romance	8	3,75
+Sci-Fi	20	3,85
+Thriller	16	3,88
+War	2	4,00

@@ -1,0 +1,1069 @@
+================================================================================
+            KE HOACH HOAN THANH BAI TAP HADOOP MAPREDUCE - TH1
+================================================================================
+
+Sinh vien: [Dien ten sinh vien]
+Ma so:     [Dien MSSV]
+Ngay:      [Dien ngay thuc hanh]
+
+================================================================================
+PHAN 1: PHAN TICH BAI TAP
+================================================================================
+
+1.1. DU LIEU SU DUNG
+---------------------
+a) movies.txt
+   - Schema: MovieID, Title, Genres
+   - Delimiter: ", " (dau phay + khoang trang)
+   - So ban ghi: 50 phim
+   - Vi du: 1043, Toy Story (1995), Animation|Children|Comedy
+
+b) ratings_1.txt va ratings_2.txt
+   - Schema: UserID, MovieID, Rating, Timestamp
+   - Delimiter: ", " (dau phay + khoang trang)
+   - So ban ghi: 50 dong moi file (tong 100 ratings)
+   - Vi du: 537, 1043, 4.0, 964982703
+
+c) users.txt
+   - Schema: UserID, Gender, Age, Occupation, Zip-code
+   - Delimiter: ", " (dau phay + khoang trang)
+   - So ban ghi: 50 users
+   - Vi du: 537, F, 25, 10, 48067
+
+1.2. DANH SACH BAI TAP
+-----------------------
+Bai 1: Tinh diem danh gia trung binh va tong so luot danh gia cho moi phim
+        - Input: ratings_1.txt, ratings_2.txt
+        - Output: MovieID \t TongSoLuotDanhGia \t DiemTrungBinh
+
+Bai 2: Phan tich danh gia theo the loai phim
+        - Input: movies.txt, ratings_1.txt, ratings_2.txt
+        - Output: Genre \t TongSoLuotDanhGia \t DiemTrungBinh
+
+Bai 3: Phan tich danh gia theo gioi tinh
+        - Input: users.txt, ratings_1.txt, ratings_2.txt
+        - Output: MovieID \t Gender \t TongSoLuotDanhGia \t DiemTrungBinh
+
+Bai 4 (Tuy chon): Phan tich danh gia theo nhom tuoi
+        - Input: users.txt, ratings_1.txt, ratings_2.txt
+        - Output: MovieID \t [0-18: avg, 18-35: avg, 35-50: avg, 50+: avg]
+
+================================================================================
+PHAN 2: CHUAN BI MOI TRUONG HADOOP TREN WINDOWS
+================================================================================
+
+2.1. YEU CAU PHAN MEM
+-----------------------
+- Java JDK 8 tro len (khuyen nghi JDK 8)
+- Hadoop 3.x (da cai dat va cau hinh tren Windows)
+- Bien moi truong: JAVA_HOME, HADOOP_HOME, PATH
+
+2.2. KIEM TRA MOI TRUONG
+-------------------------
+Chay cac lenh sau trong Command Prompt (cmd) hoac PowerShell:
+
+    java -version
+    javac -version
+    hadoop version
+
+2.3. KHOI DONG HADOOP (neu chua chay)
+---------------------------------------
+    start-dfs.cmd
+    start-yarn.cmd
+
+Hoac:
+    start-all.cmd
+
+Kiem tra HDFS hoat dong:
+    hdfs dfs -ls /
+
+================================================================================
+PHAN 3: UPLOAD DATASET LEN HDFS
+================================================================================
+
+3.1. TAO THU MUC TREN HDFS
+----------------------------
+    hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/ratings
+    hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/movies
+    hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/users
+
+3.2. UPLOAD DU LIEU
+--------------------
+    hdfs dfs -put D:\Project\hadoop\TH1\ratings_1.txt /user/%USERNAME%/TH1/input/ratings/
+    hdfs dfs -put D:\Project\hadoop\TH1\ratings_2.txt /user/%USERNAME%/TH1/input/ratings/
+    hdfs dfs -put D:\Project\hadoop\TH1\movies.txt /user/%USERNAME%/TH1/input/movies/
+    hdfs dfs -put D:\Project\hadoop\TH1\users.txt /user/%USERNAME%/TH1/input/users/
+
+3.3. KIEM TRA DU LIEU DA UPLOAD
+---------------------------------
+    hdfs dfs -ls /user/%USERNAME%/TH1/input/ratings/
+    hdfs dfs -ls /user/%USERNAME%/TH1/input/movies/
+    hdfs dfs -ls /user/%USERNAME%/TH1/input/users/
+
+    >>> CHUP ANH MAN HINH: Danh sach file trong HDFS <<<
+
+================================================================================
+PHAN 4: MA NGUON JAVA MAPREDUCE
+================================================================================
+
+------------------------------------------------------------------------
+BAI 1: TINH DIEM TRUNG BINH VA TONG SO LUOT DANH GIA CHO MOI PHIM
+------------------------------------------------------------------------
+
+File: MovieRatingAvg.java
+
+---BEGIN CODE---
+import java.io.IOException;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class MovieRatingAvg {
+
+    // Mapper: doc tung dong rating, emit (MovieID, Rating)
+    public static class RatingMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        private Text movieId = new Text();
+        private Text rating = new Text();
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            // Format: UserID, MovieID, Rating, Timestamp
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                movieId.set(parts[1].trim());
+                rating.set(parts[2].trim());
+                context.write(movieId, rating);
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem so luot danh gia
+    public static class RatingReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Movie Rating Average");
+        job.setJarByClass(MovieRatingAvg.class);
+
+        job.setMapperClass(RatingMapper.class);
+        job.setReducerClass(RatingReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+------------------------------------------------------------------------
+BAI 2: PHAN TICH DANH GIA THEO THE LOAI PHIM
+------------------------------------------------------------------------
+
+File: GenreRatingAvg.java
+
+Mo ta: Bai nay can join du lieu tu movies.txt va ratings.
+Phuong phap: Su dung Distributed Cache de load movies.txt vao Mapper,
+             sau do map moi rating den cac genre tuong ung.
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class GenreRatingAvg {
+
+    // Mapper: doc ratings, join voi movies (tu cache), emit (Genre, Rating)
+    public static class GenreMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: MovieID -> Genres (vd: "Animation|Children|Comedy")
+        private Map<String, String> movieGenres = new HashMap<>();
+        private Text genre = new Text();
+        private Text rating = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            // Doc file movies.txt tu Distributed Cache
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: MovieID, Title, Genres
+                        String[] parts = line.split(",\\s*", 3);
+                        if (parts.length >= 3) {
+                            String movieId = parts[0].trim();
+                            String genres = parts[2].trim();
+                            movieGenres.put(movieId, genres);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            // Format: UserID, MovieID, Rating, Timestamp
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                String genres = movieGenres.get(movieId);
+                if (genres != null) {
+                    // Tach cac genre (phan cach boi "|")
+                    String[] genreList = genres.split("\\|");
+                    for (String g : genreList) {
+                        genre.set(g.trim());
+                        rating.set(ratingVal);
+                        context.write(genre, rating);
+                    }
+                }
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem so luot danh gia theo genre
+    public static class GenreReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = movies.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Genre Rating Average");
+        job.setJarByClass(GenreRatingAvg.class);
+
+        job.setMapperClass(GenreMapper.class);
+        job.setReducerClass(GenreReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        // Them movies.txt vao Distributed Cache
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+------------------------------------------------------------------------
+BAI 3: PHAN TICH DANH GIA THEO GIOI TINH
+------------------------------------------------------------------------
+
+File: GenderRatingAvg.java
+
+Mo ta: Join users.txt voi ratings de nhom danh gia theo gioi tinh.
+Phuong phap: Su dung Distributed Cache de load users.txt vao Mapper.
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class GenderRatingAvg {
+
+    // Mapper: doc ratings, join voi users (tu cache), emit (MovieID_Gender, Rating)
+    public static class GenderMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: UserID -> Gender
+        private Map<String, String> userGender = new HashMap<>();
+        private Text outputKey = new Text();
+        private Text outputValue = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: UserID, Gender, Age, Occupation, Zip-code
+                        String[] parts = line.split(",\\s*");
+                        if (parts.length >= 2) {
+                            String userId = parts[0].trim();
+                            String gender = parts[1].trim();
+                            userGender.put(userId, gender);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            // Format: UserID, MovieID, Rating, Timestamp
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String userId = parts[0].trim();
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                String gender = userGender.get(userId);
+                if (gender != null) {
+                    // Key: MovieID_Gender (vd: "1043_F")
+                    outputKey.set(movieId + "\t" + gender);
+                    outputValue.set(ratingVal);
+                    context.write(outputKey, outputValue);
+                }
+            }
+        }
+    }
+
+    // Reducer: tinh trung binh va dem
+    public static class GenderReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = users.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "Gender Rating Average");
+        job.setJarByClass(GenderRatingAvg.class);
+
+        job.setMapperClass(GenderMapper.class);
+        job.setReducerClass(GenderReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+------------------------------------------------------------------------
+BAI 4 (TUY CHON): PHAN TICH DANH GIA THEO NHOM TUOI
+------------------------------------------------------------------------
+
+File: AgeGroupRatingAvg.java
+
+Mo ta: Join users.txt voi ratings, nhom theo nhom tuoi.
+Nhom tuoi: 0-18, 18-35, 35-50, 50+
+
+---BEGIN CODE---
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class AgeGroupRatingAvg {
+
+    // Phan loai nhom tuoi
+    public static String getAgeGroup(int age) {
+        if (age <= 18) return "0-18";
+        else if (age <= 35) return "18-35";
+        else if (age <= 50) return "35-50";
+        else return "50+";
+    }
+
+    // Mapper
+    public static class AgeGroupMapper
+            extends Mapper<LongWritable, Text, Text, Text> {
+
+        // Map: UserID -> Age
+        private Map<String, Integer> userAge = new HashMap<>();
+        private Text outputKey = new Text();
+        private Text outputValue = new Text();
+
+        @Override
+        protected void setup(Context context)
+                throws IOException, InterruptedException {
+            URI[] cacheFiles = context.getCacheFiles();
+            if (cacheFiles != null && cacheFiles.length > 0) {
+                FileSystem fs = FileSystem.get(context.getConfiguration());
+                for (URI cacheFile : cacheFiles) {
+                    Path path = new Path(cacheFile.toString());
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(fs.open(path)));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty()) continue;
+                        // Format: UserID, Gender, Age, Occupation, Zip-code
+                        String[] parts = line.split(",\\s*");
+                        if (parts.length >= 3) {
+                            String userId = parts[0].trim();
+                            int age = Integer.parseInt(parts[2].trim());
+                            userAge.put(userId, age);
+                        }
+                    }
+                    reader.close();
+                }
+            }
+        }
+
+        @Override
+        public void map(LongWritable key, Text value, Context context)
+                throws IOException, InterruptedException {
+            String line = value.toString().trim();
+            if (line.isEmpty()) return;
+
+            // Format: UserID, MovieID, Rating, Timestamp
+            String[] parts = line.split(",\\s*");
+            if (parts.length >= 3) {
+                String userId = parts[0].trim();
+                String movieId = parts[1].trim();
+                String ratingVal = parts[2].trim();
+
+                Integer age = userAge.get(userId);
+                if (age != null) {
+                    String ageGroup = getAgeGroup(age);
+                    // Key: MovieID_AgeGroup
+                    outputKey.set(movieId + "\t" + ageGroup);
+                    outputValue.set(ratingVal);
+                    context.write(outputKey, outputValue);
+                }
+            }
+        }
+    }
+
+    // Reducer
+    public static class AgeGroupReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        @Override
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            double sum = 0.0;
+            int count = 0;
+
+            for (Text val : values) {
+                sum += Double.parseDouble(val.toString());
+                count++;
+            }
+
+            double avg = sum / count;
+            String result = count + "\t" + String.format("%.2f", avg);
+            context.write(key, new Text(result));
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // args[0] = input ratings path
+        // args[1] = output path
+        // args[2] = users.txt path (tren HDFS)
+
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "AgeGroup Rating Average");
+        job.setJarByClass(AgeGroupRatingAvg.class);
+
+        job.setMapperClass(AgeGroupMapper.class);
+        job.setReducerClass(AgeGroupReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        job.addCacheFile(new URI(args[2]));
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+---END CODE---
+
+
+================================================================================
+PHAN 5: COMPILE CODE JAVA VA TAO FILE JAR
+================================================================================
+
+LUU Y: Thuc hien tung bai mot. Tao thu muc lam viec:
+
+    mkdir D:\Project\hadoop\TH1\work
+    cd D:\Project\hadoop\TH1\work
+
+5.1. BAI 1 - MovieRatingAvg
+-----------------------------
+Buoc 1: Tao file MovieRatingAvg.java voi noi dung code Bai 1 o tren.
+
+Buoc 2: Compile:
+    javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . MovieRatingAvg.java
+
+Buoc 3: Tao JAR:
+    jar -cvf MovieRatingAvg.jar *.class
+
+Buoc 4: Xoa file .class (don dep):
+    del *.class
+
+5.2. BAI 2 - GenreRatingAvg
+-----------------------------
+Buoc 1: Tao file GenreRatingAvg.java voi noi dung code Bai 2 o tren.
+
+Buoc 2: Compile:
+    javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenreRatingAvg.java
+
+Buoc 3: Tao JAR:
+    jar -cvf GenreRatingAvg.jar *.class
+
+Buoc 4: Don dep:
+    del *.class
+
+5.3. BAI 3 - GenderRatingAvg
+------------------------------
+Buoc 1: Tao file GenderRatingAvg.java voi noi dung code Bai 3 o tren.
+
+Buoc 2: Compile:
+    javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenderRatingAvg.java
+
+Buoc 3: Tao JAR:
+    jar -cvf GenderRatingAvg.jar *.class
+
+Buoc 4: Don dep:
+    del *.class
+
+5.4. BAI 4 - AgeGroupRatingAvg
+--------------------------------
+Buoc 1: Tao file AgeGroupRatingAvg.java voi noi dung code Bai 4 o tren.
+
+Buoc 2: Compile:
+    javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . AgeGroupRatingAvg.java
+
+Buoc 3: Tao JAR:
+    jar -cvf AgeGroupRatingAvg.jar *.class
+
+Buoc 4: Don dep:
+    del *.class
+
+
+================================================================================
+PHAN 6: CHAY HADOOP MAPREDUCE JOB
+================================================================================
+
+** LUU Y: Moi lan chay, thu muc output phai CHUA TON TAI tren HDFS.
+   Neu chay lai, xoa output cu truoc:
+   hdfs dfs -rm -r /user/%USERNAME%/TH1/output/baiX
+
+6.1. CHAY BAI 1
+-----------------
+    hadoop jar MovieRatingAvg.jar MovieRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai1
+
+    >>> CHUP ANH MAN HINH: Ket qua chay Hadoop job (thong bao thanh cong) <<<
+
+6.2. CHAY BAI 2
+-----------------
+    hadoop jar GenreRatingAvg.jar GenreRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai2 /user/%USERNAME%/TH1/input/movies/movies.txt
+
+    >>> CHUP ANH MAN HINH: Ket qua chay Hadoop job (thong bao thanh cong) <<<
+
+6.3. CHAY BAI 3
+-----------------
+    hadoop jar GenderRatingAvg.jar GenderRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai3 /user/%USERNAME%/TH1/input/users/users.txt
+
+    >>> CHUP ANH MAN HINH: Ket qua chay Hadoop job (thong bao thanh cong) <<<
+
+6.4. CHAY BAI 4
+-----------------
+    hadoop jar AgeGroupRatingAvg.jar AgeGroupRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai4 /user/%USERNAME%/TH1/input/users/users.txt
+
+    >>> CHUP ANH MAN HINH: Ket qua chay Hadoop job (thong bao thanh cong) <<<
+
+
+================================================================================
+PHAN 7: KIEM TRA KET QUA OUTPUT TRONG HDFS
+================================================================================
+
+7.1. LIET KE FILE OUTPUT
+--------------------------
+    hdfs dfs -ls /user/%USERNAME%/TH1/output/bai1
+    hdfs dfs -ls /user/%USERNAME%/TH1/output/bai2
+    hdfs dfs -ls /user/%USERNAME%/TH1/output/bai3
+    hdfs dfs -ls /user/%USERNAME%/TH1/output/bai4
+
+    >>> CHUP ANH MAN HINH: Danh sach file output trong HDFS <<<
+
+7.2. XEM NOI DUNG OUTPUT
+--------------------------
+    hdfs dfs -cat /user/%USERNAME%/TH1/output/bai1/part-r-00000
+    hdfs dfs -cat /user/%USERNAME%/TH1/output/bai2/part-r-00000
+    hdfs dfs -cat /user/%USERNAME%/TH1/output/bai3/part-r-00000
+    hdfs dfs -cat /user/%USERNAME%/TH1/output/bai4/part-r-00000
+
+    >>> CHUP ANH MAN HINH: Noi dung output cua tung bai <<<
+
+
+================================================================================
+PHAN 8: TAI OUTPUT VE MAY
+================================================================================
+
+    hdfs dfs -get /user/%USERNAME%/TH1/output/bai1/part-r-00000 D:\Project\hadoop\TH1\output_bai1.txt
+    hdfs dfs -get /user/%USERNAME%/TH1/output/bai2/part-r-00000 D:\Project\hadoop\TH1\output_bai2.txt
+    hdfs dfs -get /user/%USERNAME%/TH1/output/bai3/part-r-00000 D:\Project\hadoop\TH1\output_bai3.txt
+    hdfs dfs -get /user/%USERNAME%/TH1/output/bai4/part-r-00000 D:\Project\hadoop\TH1\output_bai4.txt
+
+Kiem tra file da tai ve:
+    dir D:\Project\hadoop\TH1\output_bai*.txt
+
+
+================================================================================
+PHAN 9: VI DU NOI DUNG OUTPUT DU KIEN
+================================================================================
+
+9.1. BAI 1 - Diem trung binh va tong so luot danh gia cho moi phim
+--------------------------------------------------------------------
+Format: MovieID    SoLuotDanhGia    DiemTrungBinh
+
+1043    2    4.25
+1287    2    4.00
+1590    2    4.00
+1630    2    3.25
+1729    2    4.25
+1743    2    4.00
+1830    2    3.25
+1945    2    3.50
+2056    2    4.00
+2134    2    4.75
+2247    2    3.50
+2389    2    4.00
+2398    2    3.75
+2450    2    4.00
+2578    2    3.50
+2589    2    3.75
+2684    2    4.25
+2790    2    3.75
+2831    2    3.50
+2967    2    4.25
+3021    2    3.75
+3150    2    4.25
+3156    2    4.25
+3278    2    3.75
+3321    2    3.50
+3467    2    3.75
+3589    2    4.25
+3690    2    3.75
+3752    2    4.00
+3791    2    3.75
+3876    2    4.00
+3921    2    3.50
+4024    2    3.50
+4050    2    4.25
+4189    2    4.25
+4234    2    3.00
+4357    2    4.00
+4367    2    4.50
+4450    2    4.00
+4589    2    3.50
+4670    2    4.25
+4782    2    3.75
+4862    2    3.75
+4893    2    3.50
+4950    2    4.25
+5012    2    4.00
+5210    2    3.50
+5274    2    3.50
+5882    2    3.50
+5930    2    4.00
+
+9.2. BAI 2 - Diem trung binh theo the loai
+--------------------------------------------
+Format: Genre    SoLuotDanhGia    DiemTrungBinh
+
+Action          20    3.83
+Adventure       24    3.85
+Animation        4    4.13
+Biography       10    3.98
+Children         2    4.25
+Comedy           6    3.92
+Crime           16    3.84
+Drama           42    3.87
+Family           2    4.25
+Fantasy          6    3.96
+History          4    3.88
+Music            4    3.88
+Mystery          6    3.92
+Romance          6    3.75
+Sci-Fi          16    3.84
+Thriller        10    3.83
+War              2    4.00
+
+(Luu y: so lieu nay la du kien va co the sai lech nho tuy thuc te.)
+
+9.3. BAI 3 - Diem trung binh theo gioi tinh
+---------------------------------------------
+Format: MovieID    Gender    SoLuot    DiemTrungBinh
+
+1043    F    1    4.00
+1043    M    1    4.50
+1287    F    1    5.00
+1287    M    1    3.00
+...
+(Moi MovieID se co 2 dong: 1 cho F va 1 cho M)
+
+9.4. BAI 4 - Diem trung binh theo nhom tuoi
+---------------------------------------------
+Format: MovieID    AgeGroup    SoLuot    DiemTrungBinh
+
+1043    18-35    1    4.00
+1043    35-50    1    4.50
+1287    0-18     0    -
+1287    18-35    1    5.00
+...
+(Moi MovieID co the co nhieu dong tuong ung voi cac nhom tuoi)
+
+
+================================================================================
+PHAN 10: DANH SACH ANH CHUP MAN HINH CAN CO
+================================================================================
+
+STT | Mo ta anh chup                                 | Thoi diem chup
+----+-------------------------------------------------+---------------------------
+ 1  | Thong tin username cua he thong                 | Truoc khi bat dau
+    | (lenh: whoami hoac echo %USERNAME%)             |
+----+-------------------------------------------------+---------------------------
+ 2  | Kiem tra phien ban Hadoop, Java                 | Buoc chuan bi moi truong
+    | (lenh: hadoop version, java -version)           |
+----+-------------------------------------------------+---------------------------
+ 3  | Tao thu muc va upload du lieu len HDFS          | Phan 3
+    | (lenh: hdfs dfs -mkdir, hdfs dfs -put)          |
+----+-------------------------------------------------+---------------------------
+ 4  | Danh sach file da upload trong HDFS             | Sau khi upload xong
+    | (lenh: hdfs dfs -ls .../input/...)              |
+----+-------------------------------------------------+---------------------------
+ 5  | Compile Java thanh cong                         | Phan 5 (moi bai)
+    | (lenh javac khong bao loi)                      |
+----+-------------------------------------------------+---------------------------
+ 6  | Tao JAR thanh cong                              | Phan 5 (moi bai)
+    | (lenh jar -cvf ...)                             |
+----+-------------------------------------------------+---------------------------
+ 7  | Ket qua chay Hadoop job Bai 1 thanh cong        | Phan 6.1
+    | (thong bao: Job completed successfully)         |
+----+-------------------------------------------------+---------------------------
+ 8  | Ket qua chay Hadoop job Bai 2 thanh cong        | Phan 6.2
+    | (thong bao: Job completed successfully)         |
+----+-------------------------------------------------+---------------------------
+ 9  | Ket qua chay Hadoop job Bai 3 thanh cong        | Phan 6.3
+    | (thong bao: Job completed successfully)         |
+----+-------------------------------------------------+---------------------------
+10  | Ket qua chay Hadoop job Bai 4 thanh cong        | Phan 6.4
+    | (thong bao: Job completed successfully)         |
+----+-------------------------------------------------+---------------------------
+11  | Danh sach file output tren HDFS                 | Phan 7.1
+    | (lenh: hdfs dfs -ls .../output/...)             |
+----+-------------------------------------------------+---------------------------
+12  | Noi dung output Bai 1                           | Phan 7.2
+    | (lenh: hdfs dfs -cat .../output/bai1/...)       |
+----+-------------------------------------------------+---------------------------
+13  | Noi dung output Bai 2                           | Phan 7.2
+    | (lenh: hdfs dfs -cat .../output/bai2/...)       |
+----+-------------------------------------------------+---------------------------
+14  | Noi dung output Bai 3                           | Phan 7.2
+    | (lenh: hdfs dfs -cat .../output/bai3/...)       |
+----+-------------------------------------------------+---------------------------
+15  | Noi dung output Bai 4                           | Phan 7.2
+    | (lenh: hdfs dfs -cat .../output/bai4/...)       |
+----+-------------------------------------------------+---------------------------
+16  | File output da tai ve may local                 | Phan 8
+    | (lenh: dir D:\Project\hadoop\TH1\output_bai*)   |
+----+-------------------------------------------------+---------------------------
+
+LENH HIEN THI USERNAME HE THONG:
+    whoami
+    echo %USERNAME%
+
+    >>> CHUP ANH MAN HINH: Thong tin username <<<
+
+
+================================================================================
+PHAN 11: HUONG DAN TO CHUC BAI NOP
+================================================================================
+
+Cau truc bai nop:
+    TH1/
+    +-- plan.txt                 (File ke hoach nay)
+    +-- MovieRatingAvg.java      (Ma nguon Bai 1)
+    +-- MovieRatingAvg.jar       (File JAR Bai 1)
+    +-- GenreRatingAvg.java      (Ma nguon Bai 2)
+    +-- GenreRatingAvg.jar       (File JAR Bai 2)
+    +-- GenderRatingAvg.java     (Ma nguon Bai 3)
+    +-- GenderRatingAvg.jar      (File JAR Bai 3)
+    +-- AgeGroupRatingAvg.java   (Ma nguon Bai 4)
+    +-- AgeGroupRatingAvg.jar    (File JAR Bai 4)
+    +-- output_bai1.txt          (Ket qua Bai 1)
+    +-- output_bai2.txt          (Ket qua Bai 2)
+    +-- output_bai3.txt          (Ket qua Bai 3)
+    +-- output_bai4.txt          (Ket qua Bai 4)
+    +-- screenshots/             (Thu muc chua anh chup man hinh)
+        +-- 01_username.png
+        +-- 02_version.png
+        +-- 03_upload_hdfs.png
+        +-- 04_list_input.png
+        +-- 05_compile.png
+        +-- 06_create_jar.png
+        +-- 07_job_bai1.png
+        +-- 08_job_bai2.png
+        +-- 09_job_bai3.png
+        +-- 10_job_bai4.png
+        +-- 11_list_output.png
+        +-- 12_output_bai1.png
+        +-- 13_output_bai2.png
+        +-- 14_output_bai3.png
+        +-- 15_output_bai4.png
+        +-- 16_downloaded_files.png
+
+
+================================================================================
+PHAN 12: TONG HOP CAC LENH HADOOP CAN DUNG (THEO THU TU)
+================================================================================
+
+--- Buoc 0: Kiem tra moi truong ---
+whoami
+java -version
+javac -version
+hadoop version
+
+--- Buoc 1: Khoi dong Hadoop (neu can) ---
+start-dfs.cmd
+start-yarn.cmd
+
+--- Buoc 2: Tao thu muc HDFS ---
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/ratings
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/movies
+hdfs dfs -mkdir -p /user/%USERNAME%/TH1/input/users
+
+--- Buoc 3: Upload du lieu ---
+hdfs dfs -put D:\Project\hadoop\TH1\ratings_1.txt /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -put D:\Project\hadoop\TH1\ratings_2.txt /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -put D:\Project\hadoop\TH1\movies.txt /user/%USERNAME%/TH1/input/movies/
+hdfs dfs -put D:\Project\hadoop\TH1\users.txt /user/%USERNAME%/TH1/input/users/
+
+--- Buoc 4: Kiem tra upload ---
+hdfs dfs -ls /user/%USERNAME%/TH1/input/ratings/
+hdfs dfs -ls /user/%USERNAME%/TH1/input/movies/
+hdfs dfs -ls /user/%USERNAME%/TH1/input/users/
+
+--- Buoc 5: Compile tung bai (trong thu muc work) ---
+cd D:\Project\hadoop\TH1\work
+
+REM Bai 1
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . MovieRatingAvg.java
+jar -cvf MovieRatingAvg.jar *.class
+del *.class
+
+REM Bai 2
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenreRatingAvg.java
+jar -cvf GenreRatingAvg.jar *.class
+del *.class
+
+REM Bai 3
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . GenderRatingAvg.java
+jar -cvf GenderRatingAvg.jar *.class
+del *.class
+
+REM Bai 4
+javac -classpath "%HADOOP_HOME%\share\hadoop\common\*;%HADOOP_HOME%\share\hadoop\common\lib\*;%HADOOP_HOME%\share\hadoop\mapreduce\*;%HADOOP_HOME%\share\hadoop\mapreduce\lib\*" -d . AgeGroupRatingAvg.java
+jar -cvf AgeGroupRatingAvg.jar *.class
+del *.class
+
+--- Buoc 6: Chay cac job ---
+hadoop jar MovieRatingAvg.jar MovieRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai1
+
+hadoop jar GenreRatingAvg.jar GenreRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai2 /user/%USERNAME%/TH1/input/movies/movies.txt
+
+hadoop jar GenderRatingAvg.jar GenderRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai3 /user/%USERNAME%/TH1/input/users/users.txt
+
+hadoop jar AgeGroupRatingAvg.jar AgeGroupRatingAvg /user/%USERNAME%/TH1/input/ratings /user/%USERNAME%/TH1/output/bai4 /user/%USERNAME%/TH1/input/users/users.txt
+
+--- Buoc 7: Xem ket qua ---
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai1
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai2
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai3
+hdfs dfs -ls /user/%USERNAME%/TH1/output/bai4
+
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai1/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai2/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai3/part-r-00000
+hdfs dfs -cat /user/%USERNAME%/TH1/output/bai4/part-r-00000
+
+--- Buoc 8: Tai output ve may ---
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai1/part-r-00000 D:\Project\hadoop\TH1\output_bai1.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai2/part-r-00000 D:\Project\hadoop\TH1\output_bai2.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai3/part-r-00000 D:\Project\hadoop\TH1\output_bai3.txt
+hdfs dfs -get /user/%USERNAME%/TH1/output/bai4/part-r-00000 D:\Project\hadoop\TH1\output_bai4.txt
+
+--- Buoc 9 (Neu can chay lai): Xoa output cu ---
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai1
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai2
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai3
+hdfs dfs -rm -r /user/%USERNAME%/TH1/output/bai4
+
+
+================================================================================
+PHAN 13: LUU Y QUAN TRONG
+================================================================================
+
+1. Delimiter cua du lieu la ", " (dau phay + khoang trang), KHONG phai "::"
+   Code Java su dung regex: split(",\\s*") de xu ly linh hoat.
+
+2. File movies.txt dung "," de tach MovieID, Title, Genres.
+   Vi du nhan de phim co dau phay, nen split toi da 3 phan: split(",\\s*", 3)
+
+3. Genres trong movies.txt phan cach boi "|" (pipe).
+   Vi du: Animation|Children|Comedy
+
+4. Truoc khi chay lai mot job, PHAI xoa thu muc output cu tren HDFS:
+   hdfs dfs -rm -r /user/%USERNAME%/TH1/output/baiX
+
+5. Cac bien moi truong can thiet:
+   - JAVA_HOME: tro den thu muc cai dat JDK
+   - HADOOP_HOME: tro den thu muc cai dat Hadoop
+   - PATH: them %JAVA_HOME%\bin va %HADOOP_HOME%\bin
+
+6. Neu gap loi "winutils.exe not found", can tai winutils.exe tuong ung
+   voi phien ban Hadoop va dat vao %HADOOP_HOME%\bin\
+
+7. Su dung CMD (Command Prompt) thay vi PowerShell de tranh loi voi
+   ky tu dac biet trong lenh Hadoop.
+
+8. Lenh whoami se hien thi username he thong - can chup lai de nop.
+
+================================================================================
+                              KET THUC KE HOACH
+================================================================================
